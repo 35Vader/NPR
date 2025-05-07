@@ -1,0 +1,43 @@
+{
+    "prototypes": [
+        {
+            "name": "Car",
+            "accel": 2.6,
+            "decel": 4.5,
+            "length": 5.00,
+            "maxSpeed": 70.0,
+            "minGap": 2.5,
+            "sigma": 0.5,
+            "speedDeviation": 0.1,
+            "tau": 1
+        }
+    ],
+    "vehicles": [
+        {
+            "startingTime": "0.2 s",
+            "endingTime": "950.0 s",
+            "targetFlow": 1000,
+            "route": "r_0",
+            "laneSelectionMode": "RANDOM",
+            "types": [
+                {
+                    "name": "Car"
+                }
+            ]
+        },
+        {
+            "startingTime": "0.2 s",
+            "targetFlow": 900,
+            "maxNumberVehicles": 235,
+            "route": "r_1",
+            "laneSelectionMode": "RANDOM",
+            "types": [
+                {
+                    "name": "Car"
+                }
+            ]
+        }
+    ]
+}
+
+

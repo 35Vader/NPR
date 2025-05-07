@@ -1,0 +1,32 @@
+{
+    "simulation": {
+        "id": "Monza",
+        "duration": "1000s",
+        "randomSeed": 268965854,
+        "projection": {
+            "centerCoordinates": {
+                "latitude": 45.622262,
+                "longitude": 9.285936
+            },
+            "cartesianOffset": {
+                "x": -522290.863,
+                "y": -5052119.358
+            }
+        },
+        "network": {
+            "netMask": "255.255.0.0",
+            "vehicleNet": "10.1.0.0",
+            "rsuNet": "10.2.0.0",
+            "tlNet": "10.3.0.0",
+            "csNet": "10.4.0.0",
+            "serverNet": "10.5.0.0",
+            "tmcNet": "10.6.0.0"
+        }
+    },
+    "federates": {
+        "application": true,
+        "sns": true,
+        "output": true,
+        "sumo": true
+    }
+}
