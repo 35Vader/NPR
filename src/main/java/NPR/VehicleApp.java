@@ -1,5 +1,4 @@
 package org.myproject.applications;
-
 import org.eclipse.mosaic.fed.application.app.AbstractApplication;
 import org.eclipse.mosaic.fed.application.app.api.VehicleApplication;
 import org.eclipse.mosaic.fed.application.app.api.os.VehicleOperatingSystem;
@@ -134,13 +133,15 @@ public class VehicleApp extends AbstractApplication<VehicleOperatingSystem> impl
         
        getLog().infoSimTime(this, "Veículo {} enviou dados: posição=({}, {}), velocidade={} m/s, sentido={}°, pisca={}",
             getOs().getId(), position.getLatitude(), position.getLongitude(), speed, heading, turnIndicator);
-}        
-        // Verifica se há alertas de risco ativos para este veículo
-        checkActiveRisks();
-        
-        // Agendar a próxima transmissão
-        getOs().getEventManager().addEvent(getOs().getSimulationTime() + TRANSMISSION_INTERVAL, this::sendVehicleData);
+    }        
+    // Verifica se há alertas de risco ativos para este veículo
+    // Removed duplicate or unnecessary call to checkActiveRisks()
+   
+    // Agendar a próxima transmissão
+    {
+    getOs().getEventManager().addEvent(getOs().getSimulationTime() + TRANSMISSION_INTERVAL, this::sendVehicleData);
     }
+    
     
     /**
      * Processa mensagem direta recebida de outro veículo.
@@ -480,21 +481,22 @@ public class VehicleApp extends AbstractApplication<VehicleOperatingSystem> impl
                Objects.equals(risk1.getSecondaryVehicleId(), risk2.getSecondaryVehicleId());
     }
     
-    /**
-     * Verifica os riscos ativos e toma ações apropriadas.
-     */
-    private void checkActiveRisks() {
-        if (activeRisks.isEmpty()) {
-            return;
-        }
-        
-        // Filtrar riscos relevantes para este veículo
-        for (RiskSituation risk : activeRisks) {
-            if (isRiskRelevantToThisVehicle(risk)) {
-                respondToRisk(risk);
+    // Ensure only one implementation of checkActiveRisks() exists
+        /**
+         * Verifica os riscos ativos e toma ações apropriadas.
+         */
+        private void checkActiveRisks() {
+            if (activeRisks.isEmpty()) {
+                return;
+            }
+            
+            // Filtrar riscos relevantes para este veículo
+            for (RiskSituation risk : activeRisks) {
+                if (isRiskRelevantToThisVehicle(risk)) {
+                    respondToRisk(risk);
+                }
             }
         }
-    }
     
     /**
      * Verifica se há riscos próximos ao veículo.
@@ -741,3 +743,5 @@ public class VehicleApp extends AbstractApplication<VehicleOperatingSystem> impl
             return currentHop;
         }
     }
+}
+}

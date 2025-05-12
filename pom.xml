@@ -1,0 +1,68 @@
+<project xmlns="http://maven.apache.org/POM/4.0.0" 
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 
+         http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <groupId>pt.uminho</groupId>
+  <artifactId>NPR</artifactId>
+  <version>1.0-SNAPSHOT</version>
+  <packaging>jar</packaging>
+
+  <name>NPR</name>
+
+  <properties>
+    <maven.compiler.source>1.8</maven.compiler.source>
+    <maven.compiler.target>1.8</maven.compiler.target>
+  </properties>
+
+  <dependencies>
+    <!-- EXEMPLO com alguns jars principais -->
+    <dependency>
+      <groupId>org.eclipse.mosaic</groupId>
+      <artifactId>mosaic-application</artifactId>
+      <version>25.0</version>
+      <scope>system</scope>
+      <systemPath>${project.basedir}/eclipse-mosaic-25.0/lib/mosaic/mosaic-application-25.0.jar</systemPath>
+    </dependency>
+
+
+    <dependency>
+      <groupId>org.eclipse.mosaic</groupId>
+      <artifactId>mosaic-objects</artifactId>
+      <version>25.0</version>
+      <scope>system</scope>
+      <systemPath>${project.basedir}/eclipse-mosaic-25.0/lib/mosaic/mosaic-objects-25.0.jar</systemPath>
+    </dependency>
+
+    <dependency>
+      <groupId>org.eclipse.mosaic</groupId>
+      <artifactId>mosaic-utils</artifactId>
+      <version>25.0</version>
+      <scope>system</scope>
+      <systemPath>${project.basedir}/eclipse-mosaic-25.0/lib/mosaic/mosaic-utils-25.0.jar</systemPath>
+    </dependency>
+
+    <dependency>
+      <groupId>org.eclipse.mosaic</groupId>
+      <artifactId>mosaic-interactions</artifactId>
+      <version>25.0</version>
+      <scope>system</scope>
+      <systemPath>${project.basedir}/eclipse-mosaic-25.0/lib/mosaic/mosaic-interactions-25.0.jar</systemPath>
+    </dependency>
+
+    <!-- Adiciona também slf4j para o logger -->
+    <dependency>
+      <groupId>org.slf4j</groupId>
+      <artifactId>slf4j-api</artifactId>
+      <version>1.7.36</version>
+    </dependency>
+
+    <!-- javax.annotation para @PostConstruct, etc -->
+    <dependency>
+      <groupId>javax.annotation</groupId>
+      <artifactId>javax.annotation-api</artifactId>
+      <version>1.3.2</version>
+    </dependency>
+  </dependencies>
+</project>
