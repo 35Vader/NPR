@@ -1,4 +1,3 @@
-# Verifique se seus arquivos estão atualizados:
 ls -la eclipse-mosaic-24.1/scenarios/Monza/
 cd eclipse-mosaic-24.1/scenarios/Monza/application
 javac -cp "/Users/alexandracandeias/Downloads/NPR-main/eclipse-mosaic-25.0/lib*" *.java
