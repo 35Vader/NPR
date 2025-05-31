@@ -10,186 +10,61 @@ import org.eclipse.mosaic.lib.objects.v2x.V2xMessage;
 import org.eclipse.mosaic.lib.objects.vehicle.VehicleData;
 import org.eclipse.mosaic.lib.util.scheduling.Event;
 import org.eclipse.mosaic.lib.geo.GeoPoint;
-
-import overflowdb.schema.NeighborInfo;
-
 import java.util.*;
 
-/**
- * Aplicação veicular para segurança rodoviária com suporte a transmissão multi-hop
- * e integração com Fog Computing para detecção e alerta de riscos.
- */
 public class VehicleApp extends AbstractApplication<VehicleOperatingSystem> implements VehicleApplication {
 
-    public void onStartup() {
-        // Implement startup logic if needed
-    }
-
-    @Override
-    public void onShutdown() {
-        // Implement shutdown logic if needed
-    }
-
-    // Constantes para configuração
-    private static final long TRANSMISSION_INTERVAL = 1000; // Intervalo de transmissão em ms (1 segundo)
-    private static final int DIRECT_TRANSMISSION_RADIUS = 300; // Raio de transmissão direta em metros
-    private static final int MAX_HOPS = 3; // Número máximo de saltos para encaminhamento
-    private static final long MESSAGE_TTL = 5000; // Tempo de vida da mensagem em ms
-    private static final long NEIGHBOR_TIMEOUT = 10000; // Tempo para considerar um vizinho desatualizado
-    private static final double RISK_DISTANCE_THRESHOLD = 150.0; // Distância para considerar um risco relevante
+    // Configurações
+    private static final long TRANSMISSION_INTERVAL = 100; // ms (10Hz)
+    private static final int DIRECT_TRANSMISSION_RADIUS = 300; // metros
+    private static final int MAX_HOPS = 3; // Máximo de saltos
+    private static final long MESSAGE_TTL = 5000; // ms (5s)
+    private static final long CLEANUP_INTERVAL = 1000; // ms
+    private static final double RISK_DISTANCE_THRESHOLD = 150.0; // metros
     private static final String APP_ID = "VehicleApp";
     
-    // Mapa para rastrear mensagens já encaminhadas (para evitar duplicações)
+    // Estruturas de dados
     private final Map<String, Long> forwardedMessages = new HashMap<>();
-    
-    // Lista de veículos vizinhos conhecidos
     private final Map<String, NeighborInfo> knownNeighbors = new HashMap<>();
-    
-    // Informações de tráfego mais recentes
-    private final Map<String, TrafficSegmentInfo> trafficSegments = new HashMap<>();
-
-
-    // Alertas de risco recebidos
     private final List<RiskSituation> activeRisks = new ArrayList<>();
-
-    // Stub for RiskSituation to resolve compilation error
-    public static class RiskSituation {
-        private final RiskType type;
-        private final String primaryVehicleId;
-        private final String secondaryVehicleId;
-        private final String description;
-
-        public RiskSituation(RiskType type, String primaryVehicleId, String secondaryVehicleId, String description) {
-            this.type = type;
-            this.primaryVehicleId = primaryVehicleId;
-            this.secondaryVehicleId = secondaryVehicleId;
-            this.description = description;
-        }
-
-        public RiskType getType() { return type; }
-        public String getPrimaryVehicleId() { return primaryVehicleId; }
-        public String getSecondaryVehicleId() { return secondaryVehicleId; }
-        public String getDescription() { return description; }
-    }
-    private long lastRiskCleanupTime = 0;
-
-    // Informações sobre a RSU mais próxima conhecida
     private String nearestRsuId = null;
     private GeoPoint nearestRsuPosition = null;
     private double nearestRsuDistance = Double.MAX_VALUE;
+    
     // Estatísticas
     private int totalMessagesSent = 0;
     private int totalMessagesForwarded = 0;
     private int totalRisksReceived = 0;
 
-    // Dummy classes for missing types
-// ====== STUBS AND ENUMS FOR MISSING TYPES ======
-// Simple stub for GeoPoint
-public static class GeoPoint {
-    private final double latitude;
-    private final double longitude;
-    public GeoPoint(double latitude, double longitude) {
-        this.latitude = latitude;
-        this.longitude = longitude;
-    }
-    public double getLatitude() { return latitude; }
-    public double getLongitude() { return longitude; }
-}
-
-// Simple stub for TrafficSegmentInfo
-public static class TrafficSegmentInfo {
-    private final String segmentId;
-    public TrafficSegmentInfo(String segmentId) {
-        this.segmentId = segmentId;
-    }
-    public String getSegmentId() { return segmentId; }
-}
-
-// Simple stub for TurnIndicator
-public enum TurnIndicator {
-    NONE, LEFT, RIGHT, HAZARD
-}
-
-// Simple stub for GeoUtils
-public static class GeoUtils {
-    public static double calculateDistance(GeoPoint a, GeoPoint b) {
-        // Dummy implementation
-        return Math.sqrt(Math.pow(a.getLatitude() - b.getLatitude(), 2) + Math.pow(a.getLongitude() - b.getLongitude(), 2));
-    }
-}
-
-// Enum for risk types
-public enum RiskType {
-    COLLISION_RISK,
-    SPEED_VIOLATION,
-    PEDESTRIAN_RISK,
-    ROAD_HAZARD
-}
-
-// Dummy message classes for RSU messages
-public static class RsuRiskAlertMessage extends V2xMessage {
-    private final String rsuId;
-    private final RiskSituation riskSituation;
-
-    public RsuRiskAlertMessage(String rsuId, RiskSituation riskSituation) {
-        super(null); // Pass appropriate arguments as required by V2xMessage's constructor
-        this.rsuId = rsuId;
-        this.riskSituation = riskSituation;
-    }
-
-    public String getRsuId() { return rsuId; }
-    public RiskSituation getRiskSituation() { return riskSituation; }
-
     @Override
-    public EncodedPayload getPayload() { return riskSituation; }
-}
-
-public static class RsuRiskAlertsMessage extends V2xMessage {
-    private final String rsuId;
-    private final java.util.List<RiskSituation> riskSituations;
-
-    public RsuRiskAlertsMessage(String rsuId, java.util.List<RiskSituation> riskSituations) {
-        super(null); // Pass appropriate argument as required by V2xMessage's constructor
-        this.rsuId = rsuId;
-        this.riskSituations = riskSituations;
+    public void onStartup() {
+        getLog().infoSimTime(this, "Iniciando aplicação veicular");
+        
+        // Configurar comunicação
+        getOs().getAdHocModule().enable(
+            new AdHocModuleConfiguration()
+                .addRadio()
+                .channel(AdHocChannel.CCH)
+                .power(50)
+                .create()
+        );
+        
+        // Agendar o primeiro envio de dados
+        getOs().getEventManager().addEvent(getOs().getSimulationTime() + TRANSMISSION_INTERVAL, this::sendVehicleData);
+        
+        // Agendar limpeza periódica
+        getOs().getEventManager().addEvent(getOs().getSimulationTime() + CLEANUP_INTERVAL, this::cleanupOldData);
     }
 
-    public String getRsuId() { return rsuId; }
-    public java.util.List<RiskSituation> getRiskSituations() { return riskSituations; }
-
-    @Override
-    public EncodedPayload getPayload() { return riskSituations; }
-}
-
-// Dummy message class for traffic info
-public static class RsuTrafficInfoMessage extends V2xMessage {
-    private final String rsuId;
-    private final java.util.List<TrafficSegmentInfo> segmentInfos;
-
-    public RsuTrafficInfoMessage(String rsuId, java.util.List<TrafficSegmentInfo> segmentInfos) {
-        super(new EncodedPayload(segmentInfos)); // Pass the payload to the superclass constructor
-        this.rsuId = rsuId;
-        this.segmentInfos = segmentInfos;
-    }
-
-    public String getRsuId() { return rsuId; }
-    public java.util.List<TrafficSegmentInfo> getSegmentInfos() { return segmentInfos; }
-
-    @Override
-    public EncodedPayload getPayload() { return segmentInfos; }
-
-    /**
-     * Envia os dados do veículo para RSUs e outros veículos próximos.
-     */
     private void sendVehicleData(@Nonnull final Event event) {
-        // Obter os dados atuais do veículo
+        // Coletar dados do veículo
         VehicleData vehicleData = getOs().getVehicleData();
         GeoPoint position = vehicleData.getPosition();
         double speed = vehicleData.getSpeed();
         double heading = vehicleData.getHeading();
         TurnIndicator turnIndicator = determineTurnIndicator(vehicleData);
 
-        // Criar a mensagem com os dados do veículo (equivalente a CAM - Cooperative Awareness Message)
+        // Criar mensagem
         VehicleDataMessage message = new VehicleDataMessage(
                 getOs().getId(),
                 position,
@@ -198,523 +73,387 @@ public static class RsuTrafficInfoMessage extends V2xMessage {
                 getOs().getSimulationTime(),
                 turnIndicator
         );
-        
-        // Configurar o routing da mensagem (broadcast direto para RSUs e outros veículos)
+
+        // Configurar roteamento (broadcast geográfico)
         MessageRouting routing = MessageRouting.createGeoBroadcastRouting(
                 AdHocChannel.CCH,
                 APP_ID,
                 DIRECT_TRANSMISSION_RADIUS,
                 position
         );
-        
-        // Transmitir a mensagem
+
+        // Enviar
         getOs().getAdHocModule().sendV2xMessage(message, routing);
         totalMessagesSent++;
         
-       getLog().infoSimTime(this, "Veículo {} enviou dados: posição=({}, {}), velocidade={} m/s, sentido={}°, pisca={}",
-            getOs().getId(), position.getLatitude(), position.getLongitude(), speed, heading, turnIndicator);
-    }        
-    // Verifica se há alertas de risco ativos para este veículo
-    // Removed duplicate or unnecessary call to checkActiveRisks()
-   
-    // Agendar a próxima transmissão
-    {
-    getOs().getEventManager().addEvent(getOs().getSimulationTime() + TRANSMISSION_INTERVAL, this::sendVehicleData);
+        getLog().debugSimTime(this, "Veículo {} enviou dados: posição=({}, {}), velocidade={} m/s",
+                getOs().getId(), position.getLatitude(), position.getLongitude(), speed);
+
+        // Agendar próximo envio
+        getOs().getEventManager().addEvent(getOs().getSimulationTime() + TRANSMISSION_INTERVAL, this::sendVehicleData);
     }
-    
-    
-    /**
-     * Processa mensagem direta recebida de outro veículo.
-     */
+
+    @Override
+    public void onMessageReceived(V2xMessageReception reception) {
+        V2xMessage msg = reception.getMessage();
+
+        if (msg instanceof VehicleDataMessage) {
+            processVehicleMessage((VehicleDataMessage) msg);
+        } else if (msg instanceof ForwardedVehicleMessage) {
+            processForwardedMessage((ForwardedVehicleMessage) msg);
+        } else if (msg instanceof RsuRiskAlertMessage) {
+            processRiskAlert((RsuRiskAlertMessage) msg);
+        } else if (msg instanceof RsuRiskAlertsMessage) {
+            processRiskAlerts((RsuRiskAlertsMessage) msg);
+        } else if (msg instanceof RsuTrafficInfoMessage) {
+            processTrafficInfo((RsuTrafficInfoMessage) msg);
+        }
+    }
+
     private void processVehicleMessage(VehicleDataMessage message) {
-        String senderId = message.getVehicleId();
-        GeoPoint senderPosition = message.getPosition();
-        
         // Ignorar mensagens próprias
-        if (senderId.equals(getOs().getId())) {
+        if (message.getVehicleId().equals(getOs().getId())) {
             return;
         }
         
-        // Atualiza informações do vizinho
+        // Atualizar informações do vizinho
         NeighborInfo neighbor = new NeighborInfo(
-                senderId,
-                senderPosition,
-                message.getSpeed(),
-                message.getHeading(),
-                this.getOs().getSimulationTime()
+            message.getVehicleId(),
+            message.getPosition(),
+            message.getSpeed(),
+            message.getHeading(),
+            getOs().getSimulationTime()
         );
-        this.knownNeighbors.put(senderId, neighbor);
+        knownNeighbors.put(message.getVehicleId(), neighbor);
         
-        // Calcula distância até o remetente
-        double distance = GeoUtils.calculateDistance(getOs().getVehicleData().getPosition(), senderPosition);
-        
-        getLog().infoSimTime(this, "Veículo {} recebeu dados do veículo {} a {:.1f}m de distância",
-                getOs().getId(), senderId, distance);
-        
-        // Verifica se a mensagem deve ser encaminhada (multi-hop)
-        if (shouldForwardMessage(message, 1)) {
-            forwardMessage(message, 1);
-        }
-    }
-
-    /**
-     * Processa mensagem encaminhada recebida.
-     */
-    // ====== CLASSES INTERNAS E MENSAGENS ======
-
-    /**
-     * Classe para armazenar informações sobre veículos vizinhos.
-     */
-    private static class NeighborInfo {
-        private final String vehicleId;
-        private final GeoPoint position;
-        private final double speed;
-        private final double heading;
-        private final long lastUpdateTime;
-
-        public NeighborInfo(String vehicleId, GeoPoint position, double speed, double heading, long lastUpdateTime) {
-            this.vehicleId = vehicleId;
-            this.position = position;
-            this.speed = speed;
-            this.heading = heading;
-            this.lastUpdateTime = lastUpdateTime;
-        }
-
-        public String getVehicleId() {
-            return vehicleId;
-        }
-
-        public GeoPoint getPosition() {
-            return position;
-        }
-
-        public double getSpeed() {
-            return speed;
-        }
-
-        public double getHeading() {
-            return heading;
-        }
-
-        public long getLastUpdateTime() {
-            return lastUpdateTime;
-        }
-    }
-    public static class VehicleDataMessage extends V2xMessage {
-        private final String vehicleId;
-        private final GeoPoint position;
-        private final double speed;
-        private final double heading;
-        private final long timestamp;
-        private final TurnIndicator turnIndicator; // Novo campo
-    
-        public VehicleDataMessage(String vehicleId, GeoPoint position, double speed, double heading, long timestamp, TurnIndicator turnIndicator) {
-            super(new EncodedPayload(vehicleId + "," + position + "," + speed + "," + heading + "," + timestamp + "," + turnIndicator));
-            this.vehicleId = vehicleId;
-            this.position = position;
-            this.speed = speed;
-            this.heading = heading;
-            this.timestamp = timestamp;
-            this.turnIndicator = turnIndicator;
-        }
-
-        public TurnIndicator getTurnIndicator() {
-            return turnIndicator;
-        }
-
-        public String getVehicleId() {
-            return vehicleId;
-        }
-
-        public GeoPoint getPosition() {
-            return position;
-        }
-
-        public double getSpeed() {
-            return speed;
-        }
-
-        public double getHeading() {
-            return heading;
-        }
-
-        public long getTimestamp() {
-            return timestamp;
-        }
-
-        @Override
-        public Object getPayload() {
-            return null;
-        }
-
-        @Override
-        public String toString() {
-            return "VehicleDataMessage{" +
-                    "vehicleId='" + vehicleId + '\'' +
-                    ", position=" + position +
-                    ", speed=" + speed +
-                    ", heading=" + heading +
-                    ", timestamp=" + timestamp +
-                    '}';
-        }
-    }
-    public static class ForwardedVehicleMessage extends V2xMessage {
-        private final String forwarderVehicleId;
-        private final long timestamp;
-        private final VehicleDataMessage originalMessage;
-        private final int currentHop;
-    
-        public ForwardedVehicleMessage(String forwarderVehicleId, long timestamp,
-                VehicleDataMessage originalMessage, int currentHop) {
-            super(new EncodedPayload(forwarderVehicleId + "," + timestamp + "," + currentHop + "," + originalMessage));
-            this.forwarderVehicleId = forwarderVehicleId;
-            this.timestamp = timestamp;
-            this.originalMessage = originalMessage;
-            this.currentHop = currentHop;
-        }
-
-        public String getForwarderVehicleId() {
-            return forwarderVehicleId;
-        }
-
-        public long getTimestamp() {
-            return timestamp;
-        }
-
-        public VehicleDataMessage getOriginalMessage() {
-            return originalMessage;
-        }
-
-        public int getCurrentHop() {
-            return currentHop;
-        }
-
-
-        @Override
-        public EncodedPayload getPayload() {
-            // You may need to encode originalMessage as an EncodedPayload if required by your framework
-            // For now, return null or implement encoding as needed
-            return null;
+        // Verificar se deve encaminhar (multi-hop)
+        if (shouldForwardMessage(message, 0)) {
+            forwardMessage(message, 0);
         }
     }
 
     private void processForwardedMessage(ForwardedVehicleMessage forwardedMessage) {
         VehicleDataMessage originalMessage = forwardedMessage.getOriginalMessage();
-        String originalSenderId = originalMessage.getVehicleId();
-        String forwarderId = forwardedMessage.getForwarderVehicleId();
-        int currentHop = forwardedMessage.getCurrentHop();
-    
-        // Ignorar mensagens próprias ou já encaminhadas pelo próprio veículo
-        if (originalSenderId.equals(this.getOs().getId()) || forwarderId.equals(this.getOs().getId())) {
+        
+        // Ignorar mensagens próprias ou já processadas
+        if (originalMessage.getVehicleId().equals(getOs().getId()) || 
+            forwardedMessages.containsKey(originalMessage.getMessageId())) {
             return;
         }
-
-        // Gera um ID único para esta mensagem
-        String messageId = originalSenderId + "_" + forwardedMessage.getTimestamp();
-
-        // Verifica se já processamos esta mensagem
-        if (forwardedMessages.containsKey(messageId)) {
-            return;
-        }
-
-        // Registra que recebemos esta mensagem
-        forwardedMessages.put(messageId, getOs().getSimulationTime());
-
-        getLog().infoSimTime(this, "Veículo {} recebeu mensagem encaminhada do veículo {} no salto {}, originalmente de {}",
-                getOs().getId(), forwarderId, currentHop, originalSenderId);
-
-        // Atualiza informações do vizinho original
+        
+        // Registrar mensagem
+        forwardedMessages.put(originalMessage.getMessageId(), getOs().getSimulationTime());
+        
+        // Atualizar informações do vizinho
         NeighborInfo neighbor = new NeighborInfo(
-                originalSenderId,
-                originalMessage.getPosition(),
-                originalMessage.getSpeed(),
-                originalMessage.getHeading(),
-                this.getOs().getSimulationTime()
+            originalMessage.getVehicleId(),
+            originalMessage.getPosition(),
+            originalMessage.getSpeed(),
+            originalMessage.getHeading(),
+            getOs().getSimulationTime()
         );
-        knownNeighbors.put(originalSenderId, neighbor);
-
-        // Verifica se deve continuar encaminhando
-        if (shouldForwardMessage(originalMessage, currentHop)) {
-            forwardMessage(originalMessage, currentHop);
+        knownNeighbors.put(originalMessage.getVehicleId(), neighbor);
+        
+        // Verificar se deve encaminhar novamente
+        if (shouldForwardMessage(originalMessage, forwardedMessage.getCurrentHop())) {
+            forwardMessage(originalMessage, forwardedMessage.getCurrentHop());
         }
     }
-    
-    /**
-     * Processa alerta de risco individual recebido da RSU.
-     */
+
+    private boolean shouldForwardMessage(VehicleDataMessage message, int currentHop) {
+        // Verificar limite de saltos
+        if (currentHop >= MAX_HOPS) {
+            return false;
+        }
+        
+        // Verificar mensagens antigas
+        if (getOs().getSimulationTime() - message.getTimestamp() > MESSAGE_TTL) {
+            return false;
+        }
+        
+        // Verificar se já foi encaminhada
+        if (forwardedMessages.containsKey(message.getMessageId())) {
+            return false;
+        }
+        
+        // Verificar proximidade com RSU
+        if (nearestRsuId != null && nearestRsuDistance < DIRECT_TRANSMISSION_RADIUS) {
+            return false;
+        }
+        
+        return true;
+    }
+
+    private void forwardMessage(VehicleDataMessage originalMessage, int currentHop) {
+        // Criar mensagem encaminhada
+        ForwardedVehicleMessage fwdMsg = new ForwardedVehicleMessage(
+            getOs().getId(),
+            getOs().getSimulationTime(),
+            originalMessage,
+            currentHop + 1
+        );
+
+        // Configurar roteamento
+        MessageRouting routing = MessageRouting.createGeoBroadcastRouting(
+            AdHocChannel.CCH,
+            APP_ID,
+            DIRECT_TRANSMISSION_RADIUS,
+            getOs().getVehicleData().getPosition()
+        );
+
+        // Enviar
+        getOs().getAdHocModule().sendV2xMessage(fwdMsg, routing);
+        totalMessagesForwarded++;
+        
+        // Registrar encaminhamento
+        forwardedMessages.put(originalMessage.getMessageId(), getOs().getSimulationTime());
+        
+        getLog().debugSimTime(this, "Veículo {} encaminhou mensagem de {} (salto {})",
+            getOs().getId(), originalMessage.getVehicleId(), currentHop + 1);
+    }
+
     private void processRiskAlert(RsuRiskAlertMessage message) {
         RiskSituation risk = message.getRiskSituation();
         
-        getLog().infoSimTime(this, "Veículo {} recebeu alerta de risco da RSU {}: {}",
-                getOs().getId(), message.getRsuId(), risk.getDescription());
+        getLog().infoSimTime(this, "ALERTA DE RISCO: {}", risk.getDescription());
         
-        // Atualiza informações da RSU mais próxima
-        updateNearestRsu(message.getRsuId(), null);
+        // Atualizar RSU mais próxima
+        updateNearestRsu(message.getRsuId(), message.getRsuPosition());
         
-        // Adiciona o risco à lista de riscos ativos
+        // Adicionar risco ativo
         addActiveRisk(risk);
         
-        // Responde ao risco recebido
+        // Responder ao risco
         respondToRisk(risk);
     }
-    
-    /**
-     * Processa múltiplos alertas de risco recebidos da RSU.
-     */
+
     private void processRiskAlerts(RsuRiskAlertsMessage message) {
-        List<RiskSituation> risks = message.getRiskSituations();
-        
-        getLog().infoSimTime(this, "Veículo {} recebeu {} alertas de risco da RSU {}",
-                getOs().getId(), risks.size(), message.getRsuId());
-        
-        // Atualiza informações da RSU mais próxima
-        updateNearestRsu(message.getRsuId(), null);
-        
-        // Analisa os riscos relevantes para este veículo
-        boolean vehicleAtRisk = false;
-        for (RiskSituation risk : risks) {
-            // Adiciona à lista de riscos ativos
-            addActiveRisk(risk);
-            
-            // Verifica se este veículo está envolvido no risco
-            if (getOs().getId().equals(risk.getPrimaryVehicleId()) || 
-                    getOs().getId().equals(risk.getSecondaryVehicleId())) {
-                vehicleAtRisk = true;
-                getLog().infoSimTime(this, "Veículo {} está em situação de risco: {}",
-                        getOs().getId(), risk.getDescription());
-                
-                // Responde ao risco recebido
+        for (RiskSituation risk : message.getRiskSituations()) {
+            if (isRiskRelevant(risk)) {
+                getLog().infoSimTime(this, "ALERTA DE RISCO: {}", risk.getDescription());
+                addActiveRisk(risk);
                 respondToRisk(risk);
             }
         }
+    }
+
+    private void processTrafficInfo(RsuTrafficInfoMessage message) {
+        getLog().infoSimTime(this, "Informações de tráfego recebidas da RSU {}", message.getRsuId());
         
-        // Se não houver riscos específicos para este veículo, verifica se há riscos próximos
-        if (!vehicleAtRisk) {
-            checkNearbyRisks();
+        // 1. Atualizar métricas de tráfego locais
+        Map<String, Double> newMetrics = message.getTrafficMetrics();
+        trafficMetrics.putAll(newMetrics);
+        
+        // 2. Determinar segmento atual do veículo
+        String currentSegment = determineCurrentSegment();
+        
+        // 3. Verificar condições do segmento atual
+        if (currentSegment != null && trafficMetrics.containsKey(currentSegment)) {
+            double segmentSpeed = trafficMetrics.get(currentSegment);
+            
+            // 4. Tomar ações com base nas condições do tráfego
+            if (segmentSpeed < 10.0) { // Congestionamento grave (< 36 km/h)
+                handleSevereCongestion(currentSegment, segmentSpeed);
+            } 
+            else if (segmentSpeed < 20.0) { // Congestionamento moderado (< 72 km/h)
+                handleModerateCongestion(currentSegment, segmentSpeed);
+            } 
+            else if (segmentSpeed > 50.0) { // Tráfego fluido (> 180 km/h)
+                handleFreeFlowTraffic(currentSegment, segmentSpeed);
+            }
+            
+            // 5. Verificar se existem rotas alternativas melhores
+            checkAlternativeRoutes(currentSegment, segmentSpeed);
         }
-    private boolean shouldForwardMessage(VehicleDataMessage message, int currentHop) {
-        // Verifica se atingiu o limite máximo de saltos
-        if (currentHop >= MAX_HOPS) {
-            return false;
+        
+        // 6. Log detalhado para depuração
+        getLog().debugSimTime(this, "Métricas de tráfego atualizadas: {}", trafficMetrics);
+    }
+    
+    // Métodos auxiliares =====================================================
+    
+    private String determineCurrentSegment() {
+        // Lógica para determinar o segmento atual baseado na posição GPS
+        GeoPoint position = getOs().getVehicleData().getPosition();
+        
+        // Formato: seg_<latitude_arredondada>_<longitude_arredondada>
+        return String.format("seg_%.4f_%.4f", 
+            Math.round(position.getLatitude() * 10000) / 10000.0,
+            Math.round(position.getLongitude() * 10000) / 10000.0);
+    }
+    
+    private void handleSevereCongestion(String segment, double speed) {
+        // Ações para congestionamento grave
+        getLog().warnSimTime(this, "CONGESTIONAMENTO GRAVE no segmento {}: {:.1f} km/h", 
+                            segment, speed * 3.6);
+        
+        // 1. Alertar o motorista
+        getOs().getHumanMachineInterface().displayMessage(
+            "Congestionamento grave à frente! Velocidade: " + Math.round(speed * 3.6) + " km/h");
+        
+        // 2. Reduzir velocidade do veículo
+        getOs().slowDown(0.6, 3000); // Reduzir para 60% da velocidade atual por 3 segundos
+        
+        // 3. Sugerir rota alternativa
+        suggestAlternativeRoute(segment);
+    }
+    
+    private void handleModerateCongestion(String segment, double speed) {
+        // Ações para congestionamento moderado
+        getLog().infoSimTime(this, "Congestionamento moderado no segmento {}: {:.1f} km/h", 
+                            segment, speed * 3.6);
+        
+        // 1. Alertar o motorista
+        getOs().getHumanMachineInterface().displayMessage(
+            "Tráfego lento à frente: " + Math.round(speed * 3.6) + " km/h");
+        
+        // 2. Reduzir velocidade gradualmente
+        getOs().slowDown(0.8, 2000); // Reduzir para 80% da velocidade atual por 2 segundos
+    }
+    
+    private void handleFreeFlowTraffic(String segment, double speed) {
+        // Informar tráfego livre
+        getLog().debugSimTime(this, "Tráfego livre no segmento {}: {:.1f} km/h", 
+                             segment, speed * 3.6);
+        
+        // Restaurar velocidade normal
+        if (getOs().getVehicleData().getSpeed() < speed * 0.9) {
+            getOs().accelerate(1.2, 1000); // Acelerar para velocidade normal
         }
-
-        // Verifica se a mensagem está vindo do próprio veículo
-        if (message.getVehicleId().equals(getOs().getId())) {
-            return false;
+    }
+    
+    private void checkAlternativeRoutes(String currentSegment, double currentSpeed) {
+        // Buscar rotas alternativas com melhor desempenho
+        String bestAlternative = findBestAlternativeRoute(currentSegment, currentSpeed);
+        
+        if (bestAlternative != null) {
+            double alternativeSpeed = trafficMetrics.getOrDefault(bestAlternative, 0.0);
+            
+            // Se a alternativa for pelo menos 30% mais rápida
+            if (alternativeSpeed > currentSpeed * 1.3) {
+                getLog().infoSimTime(this, "Rota alternativa mais rápida disponível: {} ({:.1f} km/h vs {:.1f} km/h)", 
+                                    bestAlternative, alternativeSpeed * 3.6, currentSpeed * 3.6);
+                
+                getOs().getHumanMachineInterface().displayMessage(
+                    "Rota alternativa mais rápida disponível: " + 
+                    Math.round(alternativeSpeed * 3.6) + " km/h");
+            }
         }
-
-        // Verifica se a mensagem é recente o suficiente para ser encaminhada
-        long messageAge = getOs().getSimulationTime() - message.getTimestamp();
-        if (messageAge > MESSAGE_TTL) {
-            return false;
+    }
+    
+    private String findBestAlternativeRoute(String currentSegment, double currentSpeed) {
+        // Lógica simplificada para encontrar melhor rota alternativa
+        // Em implementação real, integraria com sistema de navegação
+        
+        String bestRoute = null;
+        double bestSpeed = currentSpeed;
+        
+        for (Map.Entry<String, Double> entry : trafficMetrics.entrySet()) {
+            if (!entry.getKey().equals(currentSegment) && 
+                entry.getValue() > bestSpeed &&
+                isRouteRelevant(entry.getKey())) {
+                
+                bestSpeed = entry.getValue();
+                bestRoute = entry.getKey();
+            }
         }
-
-        // Verifica se existe uma RSU próxima que já receberia a mensagem diretamente
-        if (this.nearestRsuId != null && this.nearestRsuDistance < DIRECT_TRANSMISSION_RADIUS) {
-            return false;
-        }
-
+        
+        return bestRoute;
+    }
+    
+    private boolean isRouteRelevant(String segmentId) {
+        // Verificar se o segmento é relevante para a rota atual
+        // (simplificado - sempre retorna true)
         return true;
     }
-    private void forwardMessage(VehicleDataMessage originalMessage, int currentHop) {
-     */
-    private boolean shouldForwardMessage(VehicleDataMessage message, int currentHop) {
-        // Verifica se atingiu o limite máximo de saltos
-        if (currentHop >= MAX_HOPS) {
-            return false;
-        }
+    
+    private void suggestAlternativeRoute(String congestedSegment) {
+        // Enviar solicitação para sistema de navegação
+        getLog().infoSimTime(this, "Solicitando rota alternativa para evitar segmento {}", congestedSegment);
         
-        // Verifica se a mensagem está vindo do próprio veículo
-        if (message.getVehicleId().equals(getOs().getId())) {
-            return false;
-        }
-        
-        // Verifica se a mensagem é recente o suficiente para ser encaminhada
-        long messageAge = getOs().getSimulationTime() - message.getTimestamp();
-        if (messageAge > MESSAGE_TTL) {
-            return false;
-        }
-        
-        // Verifica se existe uma RSU próxima que já receberia a mensagem diretamente
-        if (nearestRsuId != null && nearestRsuDistance < DIRECT_TRANSMISSION_RADIUS) {
-    private TurnIndicator determineTurnIndicator(VehicleData vehicleData) {
-        //simulação de paragem de emergência
-        // If getBrakeLight() or getLaneChangeIntention() are not available, always return NONE
-        return TurnIndicator.NONE;
-    }
-    private void forwardMessage(VehicleDataMessage originalMessage, int currentHop) {
-        // Cria uma mensagem encaminhada
-        ForwardedVehicleMessage forwardedMessage = new ForwardedVehicleMessage(
-                getOs().getId(),
-                getOs().getSimulationTime(),
-                originalMessage,
-                currentHop + 1
-        );
-        
-        // Configurar o roteamento para broadcast geográfico
-        MessageRouting routing = MessageRouting.createGeoBroadcastRouting(
-                AdHocChannel.CCH,
-                APP_ID,
-                DIRECT_TRANSMISSION_RADIUS,
-                getOs().getVehicleData().getPosition()
-        );
-        
-        // Transmitir a mensagem
-        getOs().getAdHocModule().sendV2xMessage(forwardedMessage, routing);
-        totalMessagesForwarded++;
-        
-        // Registra que esta mensagem foi encaminhada
-        String messageId = originalMessage.getVehicleId() + "_" + getOs().getSimulationTime();
-        forwardedMessages.put(messageId, getOs().getSimulationTime());
-        
-        getLog().infoSimTime(this, "Veículo {} encaminhou mensagem do veículo {} no salto {}",
-                getOs().getId(), originalMessage.getVehicleId(), currentHop + 1);
+        // Em implementação real:
+        // getOs().getNavigationModule().findAlternativeRoute(congestedSegment);
     }
 
-    /**
-     * Limpa mensagens antigas e outros dados obsoletos.
-     */
+    private void respondToRisk(RiskSituation risk) {
+        // Implementar ações de resposta ao risco
+        // (ex: reduzir velocidade, alterar rota, alertar motorista)
+        getOs().slowDown(0.7, 2000); // Reduzir 30% da velocidade por 2 segundos
+    }
+
     private void cleanupOldData(@Nonnull final Event event) {
         long currentTime = getOs().getSimulationTime();
         
-        // Limpa mensagens encaminhadas antigas
-        Iterator<Map.Entry<String, Long>> messageIterator = forwardedMessages.entrySet().iterator();
-        while (messageIterator.hasNext()) {
-            Map.Entry<String, Long> entry = messageIterator.next();
-            if (currentTime - entry.getValue() > MESSAGE_TTL) {
-                messageIterator.remove();
-            }
-        }
-    /**
-     * Determina o estado dos piscas com base no comportamento do veículo.
-     */
-    private TurnIndicator determineTurnIndicator(VehicleData vehicleData) {
-        //simulação de paragem de emergência
-        try {
-            if (vehicleData.getBrakeLight() && vehicleData.getSpeed() < 1.0) {
-                return TurnIndicator.HAZARD;
-            }
-            double angularChange = vehicleData.getLaneChangeIntention();
-            if (angularChange > 0.5) {
-                return TurnIndicator.RIGHT;
-            } else if (angularChange < -0.5) {
-                return TurnIndicator.LEFT;
-            }
-        } catch (Exception e) {
-            // API pode não estar disponível, ignore
-        }
-        return TurnIndicator.NONE;
-    }
-        RsuTrafficInfoMessage().getEventManager().addEvent(getOs().getSimulationTime() + MESSAGE_TTL, this::cleanupOldData);
+        // Limpar mensagens encaminhadas antigas
+        forwardedMessages.entrySet().removeIf(entry -> 
+            currentTime - entry.getValue() > MESSAGE_TTL);
+            
+        // Limpar vizinhos antigos
+        knownNeighbors.entrySet().removeIf(entry -> 
+            currentTime - entry.getValue().getLastUpdateTime() > 10000);
+            
+        // Limpar riscos antigos
+        activeRisks.removeIf(risk -> 
+            currentTime - risk.getTimestamp() > 15000);
+            
+        // Reagendar limpeza
+        getOs().getEventManager().addEvent(currentTime + CLEANUP_INTERVAL, this::cleanupOldData);
     }
 
-    /**
-     * Determina o estado dos piscas com base no comportamento do veículo.
-    */
     private TurnIndicator determineTurnIndicator(VehicleData vehicleData) {
-        //simulação de paragem de emergência
-        if (vehicleData.getBrakeLight() && vehicleData.getSpeed() < 1.0) {
-            return TurnIndicator.HAZARD;
-        }
-    
-        // Tenta detectar intenção de conversão baseada na trajetória
-        try {
-            double angularChange = vehicleData.getLaneChangeIntention();
-            if (angularChange > 0.5) {
-                return TurnIndicator.RIGHT;
-            } else if (angularChange < -0.5) {
-                return TurnIndicator.LEFT;
-            }
-        } catch (Exception e) {
-            // API pode não estar disponível, ignore
-        }
-    
+        // Simulação simples
+        if (vehicleData.getSpeed() < 1.0) return TurnIndicator.HAZARD;
         return TurnIndicator.NONE;
     }
 
-    /**
-     * Atualiza as informações da RSU mais próxima.
-     */
     private void updateNearestRsu(String rsuId, GeoPoint rsuPosition) {
-        // Se não temos a posição da RSU, tentamos estimar
-        if (rsuPosition == null) {
-            // Aproximação: a RSU está aproximadamente na nossa posição
-            rsuPosition = getOs().getVehicleData().getPosition();
-        }
+        if (rsuPosition == null) return;
         
-        double distance = GeoUtils.calculateDistance(getOs().getVehicleData().getPosition(), rsuPosition);
+        double distance = GeoUtils.calculateDistance(
+            getOs().getVehicleData().getPosition(), 
+            rsuPosition
+        );
         
-        // Atualiza se for a RSU mais próxima até agora
-        if (nearestRsuId == null || distance < nearestRsuDistance) {
+        if (distance < nearestRsuDistance) {
             nearestRsuId = rsuId;
             nearestRsuPosition = rsuPosition;
             nearestRsuDistance = distance;
         }
     }
-    
-    /**
-     * Adiciona um risco à lista de riscos ativos.
-     */
+
     private void addActiveRisk(RiskSituation risk) {
-        // Verifica se já temos este risco
-        for (RiskSituation existingRisk : activeRisks) {
-            if (isSameRisk(existingRisk, risk)) {
-                // Substitui pelo mais recente
-                activeRisks.remove(existingRisk);
-                activeRisks.add(risk);
-                return;
-            }
-        }
-        
-        // Adiciona novo risco
+        // Remover riscos duplicados
+        activeRisks.removeIf(r -> r.getId().equals(risk.getId()));
         activeRisks.add(risk);
         totalRisksReceived++;
     }
+
+    private boolean isRiskRelevant(RiskSituation risk) {
+        // Verificar se o risco é relevante para este veículo
+        return risk.getAffectedVehicles().contains(getOs().getId()) || 
+               GeoUtils.calculateDistance(
+                   getOs().getVehicleData().getPosition(), 
+                   risk.getLocation()
+               ) < RISK_DISTANCE_THRESHOLD;
+    }
+
+    // ===== CLASSES INTERNAS =====
     
-    /**
-     * Verifica se dois riscos são essencialmente o mesmo.
-     */
-    private boolean isSameRisk(RiskSituation risk1, RiskSituation risk2) {
-        // Mesmos veículos envolvidos e mesmo tipo de risco
-        return risk1.getType() == risk2.getType() &&
-               Objects.equals(risk1.getPrimaryVehicleId(), risk2.getPrimaryVehicleId()) &&
-               Objects.equals(risk1.getSecondaryVehicleId(), risk2.getSecondaryVehicleId());
+    public enum TurnIndicator {
+        NONE, LEFT, RIGHT, HAZARD
     }
     
-    // Ensure only one implementation of checkActiveRisks() exists
-        /**
-         * Verifica os riscos ativos e toma ações apropriadas.
-         */
-        private void checkActiveRisks() {
-            if (activeRisks.isEmpty()) {
-                return;
-            }
-            
-            // Filtrar riscos relevantes para este veículo
-            for (RiskSituation risk : activeRisks) {
-                if (isRiskRelevantToThisVehicle(risk)) {
-                    respondToRisk(risk);
-                }
-            }
-        }
+    public enum RiskType {
+        COLLISION_RISK, SPEED_VIOLATION, PEDESTRIAN_RISK, ROAD_HAZARD
+    }
     
-    /**
-     * Verifica se há riscos próximos ao veículo.
-     */
-    private void checkNearbyRisks() {
-        GeoPoint currentPosition = getOs().getVehicleData().getPosition();
-    // ====== CLASSES INTERNAS E MENSAGENS ======
-
-    /**
-     * Classe para armazenar informações sobre veículos vizinhos.
-     */
-    private static class NeighborInfo {
+    public static class NeighborInfo {
         private final String vehicleId;
         private final GeoPoint position;
         private final double speed;
         private final double heading;
         private final long lastUpdateTime;
-
+        
         public NeighborInfo(String vehicleId, GeoPoint position, double speed, double heading, long lastUpdateTime) {
             this.vehicleId = vehicleId;
             this.position = position;
@@ -722,142 +461,199 @@ public static class RsuTrafficInfoMessage extends V2xMessage {
             this.heading = heading;
             this.lastUpdateTime = lastUpdateTime;
         }
-
-        public String getVehicleId() {
-            return vehicleId;
-        }
-
-        public GeoPoint getPosition() {
-            return position;
-        }
-
-        public double getSpeed() {
-            return speed;
-        }
-
-        public double getHeading() {
-            return heading;
-        }
-
-        public long getLastUpdateTime() {
-            return lastUpdateTime;
-        }
+        
+        // Getters
+        public String getVehicleId() { return vehicleId; }
+        public GeoPoint getPosition() { return position; }
+        public double getSpeed() { return speed; }
+        public double getHeading() { return heading; }
+        public long getLastUpdateTime() { return lastUpdateTime; }
     }
+    
     public static class VehicleDataMessage extends V2xMessage {
         private final String vehicleId;
         private final GeoPoint position;
         private final double speed;
         private final double heading;
         private final long timestamp;
-        private final TurnIndicator turnIndicator; // Novo campo
-
-        public VehicleDataMessage(String vehicleId, GeoPoint position, double speed, double heading, long timestamp, TurnIndicator turnIndicator) {
-            super(null); // Pass a suitable EncodedPayload or required argument for V2xMessage's constructor
+        private final TurnIndicator turnIndicator;
+        private final String messageId;
+        
+        public VehicleDataMessage(String vehicleId, GeoPoint position, double speed, 
+                                 double heading, long timestamp, TurnIndicator turnIndicator) {
+            super(null); // O roteamento será definido no envio
             this.vehicleId = vehicleId;
             this.position = position;
             this.speed = speed;
             this.heading = heading;
             this.timestamp = timestamp;
             this.turnIndicator = turnIndicator;
+            this.messageId = vehicleId + "_" + timestamp;
         }
-
-        public TurnIndicator getTurnIndicator() {
-            return turnIndicator;
-        }
-
-        public String getVehicleId() {
-            return vehicleId;
-        }
-
-        public GeoPoint getPosition() {
-            return position;
-        }
-
-        public double getSpeed() {
-            return speed;
-        }
-
-        public double getHeading() {
-            return heading;
-        }
-
-        public long getTimestamp() {
-            return timestamp;
-        }
-
+        
+        // Getters
+        public String getVehicleId() { return vehicleId; }
+        public GeoPoint getPosition() { return position; }
+        public double getSpeed() { return speed; }
+        public double getHeading() { return heading; }
+        public long getTimestamp() { return timestamp; }
+        public TurnIndicator getTurnIndicator() { return turnIndicator; }
+        public String getMessageId() { return messageId; }
+        
         @Override
-        public Object getPayload() {
-            return null;
+        public EncodedPayload getPayload() {
+            return new EncodedPayload(toString().getBytes());
         }
-
+        
         @Override
         public String toString() {
-            return "VehicleDataMessage{" +
-                    "vehicleId='" + vehicleId + '\'' +
-                    ", position=" + position +
-                    ", speed=" + speed +
-                    ", heading=" + heading +
-                    ", timestamp=" + timestamp +
-                    '}';
+            return String.format("VehicleData[%s,%.6f,%.6f,%.1f,%.1f,%d,%s]",
+                vehicleId, position.getLatitude(), position.getLongitude(), 
+                speed, heading, timestamp, turnIndicator);
         }
     }
+    
     public static class ForwardedVehicleMessage extends V2xMessage {
-        private final String forwarderVehicleId;
-        private final long timestamp;
+        private final String forwarderId;
+        private final long forwardTimestamp;
         private final VehicleDataMessage originalMessage;
         private final int currentHop;
-
-        public ForwardedVehicleMessage(String forwarderVehicleId, long timestamp,
-                VehicleDataMessage originalMessage, int currentHop) {
-            super(null); // Pass a suitable EncodedPayload or required argument for V2xMessage's constructor
-            this.forwarderVehicleId = forwarderVehicleId;
-            this.timestamp = timestamp;
+        
+        public ForwardedVehicleMessage(String forwarderId, long forwardTimestamp, 
+                                      VehicleDataMessage originalMessage, int currentHop) {
+            super(null);
+            this.forwarderId = forwarderId;
+            this.forwardTimestamp = forwardTimestamp;
             this.originalMessage = originalMessage;
             this.currentHop = currentHop;
         }
-
-        public String getForwarderVehicleId() {
-            return forwarderVehicleId;
-        }
-
-        public long getTimestamp() {
-            return timestamp;
-        }
-
-        public VehicleDataMessage getOriginalMessage() {
-            return originalMessage;
-        }
-
-        public int getCurrentHop() {
-            return currentHop;
-        }
-
-
+        
+        // Getters
+        public String getForwarderId() { return forwarderId; }
+        public long getForwardTimestamp() { return forwardTimestamp; }
+        public VehicleDataMessage getOriginalMessage() { return originalMessage; }
+        public int getCurrentHop() { return currentHop; }
+        
         @Override
         public EncodedPayload getPayload() {
-            // You may need to encode originalMessage as an EncodedPayload if required by your framework
-            // For now, return null or implement encoding as needed
-            return null;
+            return new EncodedPayload(toString().getBytes());
+        }
+        
+        @Override
+        public String toString() {
+            return String.format("Forwarded[%s,%d,%d,%s]",
+                forwarderId, forwardTimestamp, currentHop, originalMessage);
         }
     }
-        public VehicleDataMessage getOriginalMessage() {
-    // Implement required interface methods
-    @Override
-    public void processEvent(Event event) {
-        // No-op or implement as needed
+    
+    public static class RiskSituation {
+        private final String id;
+        private final RiskType type;
+        private final Set<String> affectedVehicles;
+        private final GeoPoint location;
+        private final String description;
+        private final long timestamp;
+        
+        public RiskSituation(String id, RiskType type, Set<String> affectedVehicles, 
+                            GeoPoint location, String description) {
+            this.id = id;
+            this.type = type;
+            this.affectedVehicles = affectedVehicles;
+            this.location = location;
+            this.description = description;
+            this.timestamp = System.currentTimeMillis();
+        }
+        
+        // Getters
+        public String getId() { return id; }
+        public RiskType getType() { return type; }
+        public Set<String> getAffectedVehicles() { return affectedVehicles; }
+        public GeoPoint getLocation() { return location; }
+        public String getDescription() { return description; }
+        public long getTimestamp() { return timestamp; }
     }
-}
-
-// Implement required interface methods in VehicleApp
-@Override
-public void onVehicleUpdated(VehicleData previousData, VehicleData currentData) {
-    // No-op or implement as needed
-}
-
-@Override
-public void processEvent(Event arg0) throws Exception {
-    // TODO Auto-generated method stub
-    throw new UnsupportedOperationException("Unimplemented method 'processEvent'");
-}
-
+    
+    public static class RsuRiskAlertMessage extends V2xMessage {
+        private final String rsuId;
+        private final GeoPoint rsuPosition;
+        private final RiskSituation riskSituation;
+        
+        public RsuRiskAlertMessage(MessageRouting routing, String rsuId, 
+                                  GeoPoint rsuPosition, RiskSituation riskSituation) {
+            super(routing);
+            this.rsuId = rsuId;
+            this.rsuPosition = rsuPosition;
+            this.riskSituation = riskSituation;
+        }
+        
+        // Getters
+        public String getRsuId() { return rsuId; }
+        public GeoPoint getRsuPosition() { return rsuPosition; }
+        public RiskSituation getRiskSituation() { return riskSituation; }
+        
+        @Override
+        public EncodedPayload getPayload() {
+            return new EncodedPayload(toString().getBytes());
+        }
+        
+        @Override
+        public String toString() {
+            return String.format("RiskAlert[%s,%s]", rsuId, riskSituation);
+        }
+    }
+    
+    public static class RsuRiskAlertsMessage extends V2xMessage {
+        private final String rsuId;
+        private final GeoPoint rsuPosition;
+        private final List<RiskSituation> riskSituations;
+        
+        public RsuRiskAlertsMessage(MessageRouting routing, String rsuId, 
+                                   GeoPoint rsuPosition, List<RiskSituation> riskSituations) {
+            super(routing);
+            this.rsuId = rsuId;
+            this.rsuPosition = rsuPosition;
+            this.riskSituations = riskSituations;
+        }
+        
+        // Getters
+        public String getRsuId() { return rsuId; }
+        public GeoPoint getRsuPosition() { return rsuPosition; }
+        public List<RiskSituation> getRiskSituations() { return riskSituations; }
+        
+        @Override
+        public EncodedPayload getPayload() {
+            return new EncodedPayload(toString().getBytes());
+        }
+        
+        @Override
+        public String toString() {
+            return String.format("RiskAlerts[%s,%d risks]", rsuId, riskSituations.size());
+        }
+    }
+    
+    public static class RsuTrafficInfoMessage extends V2xMessage {
+        private final String rsuId;
+        private final Map<String, Double> trafficMetrics; // segmentId -> metric
+        
+        public RsuTrafficInfoMessage(MessageRouting routing, String rsuId, 
+                                    Map<String, Double> trafficMetrics) {
+            super(routing);
+            this.rsuId = rsuId;
+            this.trafficMetrics = trafficMetrics;
+        }
+        
+        // Getters
+        public String getRsuId() { return rsuId; }
+        public Map<String, Double> getTrafficMetrics() { return trafficMetrics; }
+        
+        @Override
+        public EncodedPayload getPayload() {
+            return new EncodedPayload(toString().getBytes());
+        }
+        
+        @Override
+        public String toString() {
+            return String.format("TrafficInfo[%s,%d segments]", rsuId, trafficMetrics.size());
+        }
+    }
 }
