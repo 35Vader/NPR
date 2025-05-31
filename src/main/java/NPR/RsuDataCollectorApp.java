@@ -9,182 +9,261 @@ import org.eclipse.mosaic.lib.objects.addressing.IpResolver;
 import org.eclipse.mosaic.lib.objects.v2x.MessageRouting;
 import org.eclipse.mosaic.lib.objects.v2x.V2xMessage;
 import org.eclipse.mosaic.lib.util.scheduling.Event;
-
 import javax.annotation.Nonnull;
 import java.util.*;
 
-public class RsuDataCollectorApp extends AbstractApplication<RoadSideUnitOperatingSystem> implements RoadSideUnitApplication {
+public class RsuDataCollectorApp extends AbstractApplication<RoadSideUnitOperatingSystem> 
+        implements RoadSideUnitApplication {
 
-    private static final long PROCESSING_INTERVAL = 1000;
-    private static final int BROADCAST_RADIUS = 500;
+    private static final long PROCESSING_INTERVAL = 100; // ms (10Hz)
+    private static final int BROADCAST_RADIUS = 500; // metros
     private static final String APP_ID = "RsuDataCollector";
     private static final String FOG_SERVER_ID = "fog_server_1";
-
-    private final List<VehicleDataSenderApp.VehicleDataMessage> receivedMessages = new ArrayList<>();
-    private final Map<String, FogComputingApp.RiskSituation> vehicleRisks = new HashMap<>();
-    private List<FogComputingApp.TrafficSegmentInfo> trafficInfo = new ArrayList<>();
-    private long lastTrafficInfoTime = 0;
+    
+    // Estruturas de dados
+    private final List<VehicleApp.VehicleDataMessage> receivedMessages = new ArrayList<>();
+    private final Map<String, VehicleApp.RiskSituation> activeRisks = new HashMap<>();
+    private final Map<String, Double> trafficMetrics = new HashMap<>(); // segmentId -> metric
 
     @Override
     public void onStartup() {
-        getLog().infoSimTime(this, "RSU {} iniciou", getOs().getId());
-        getOs().getEventManager().addEvent(getOs().getSimulationTime() + PROCESSING_INTERVAL, this::processAndForwardVehicleData);
-    }
-
-    @Override
-    public void onShutdown() {
-        getLog().infoSimTime(this, "RSU {} desligada", getOs().getId());
+        getLog().infoSimTime(this, "Iniciando RSU {}", getOs().getId());
+        
+        // Configurar comunicação
+        getOs().getAdHocModule().enable(
+            new AdHocModuleConfiguration()
+                .addRadio()
+                .channel(AdHocChannel.CCH)
+                .power(100)
+                .create()
+        );
+        
+        // Agendar primeiro processamento
+        getOs().getEventManager().addEvent(
+            getOs().getSimulationTime() + PROCESSING_INTERVAL, 
+            this::processAndForwardData
+        );
     }
 
     @Override
     public void onMessageReceived(V2xMessageReception reception) {
         V2xMessage msg = reception.getMessage();
-
-        if (msg instanceof VehicleDataSenderApp.VehicleDataMessage vehicleMsg) {
+        
+        if (msg instanceof VehicleApp.VehicleDataMessage) {
             synchronized (receivedMessages) {
-                receivedMessages.add(vehicleMsg);
+                receivedMessages.add((VehicleApp.VehicleDataMessage) msg);
             }
-            getLog().infoSimTime(this, "Recebido dado de {}", vehicleMsg.getVehicleId());
-            synchronized (vehicleRisks) {
-                if (vehicleRisks.containsKey(vehicleMsg.getVehicleId())) {
-                    sendRiskAlertToVehicle(vehicleMsg.getVehicleId(), vehicleRisks.get(vehicleMsg.getVehicleId()));
-                }
-            }
-        } else if (msg instanceof FogComputingApp.FogRiskAlertsMessage riskMsg) {
-            processRiskAlerts(riskMsg);
-        } else if (msg instanceof FogComputingApp.FogTrafficInfoMessage trafficMsg) {
-            processTrafficInfo(trafficMsg);
-        } else if (msg instanceof VehicleMultiHopApp.ForwardedVehicleMessage fwdMsg) {
+        } 
+        else if (msg instanceof VehicleApp.ForwardedVehicleMessage) {
             synchronized (receivedMessages) {
-                receivedMessages.add(fwdMsg.getOriginalMessage());
+                receivedMessages.add(((VehicleApp.ForwardedVehicleMessage) msg).getOriginalMessage());
             }
+        }
+        else if (msg instanceof FogComputingApp.FogRiskAlertsMessage) {
+            processRiskAlerts((FogComputingApp.FogRiskAlertsMessage) msg);
+        }
+        else if (msg instanceof FogComputingApp.FogTrafficInfoMessage) {
+            processTrafficInfo((FogComputingApp.FogTrafficInfoMessage) msg);
+        }
+        else if (msg instanceof FogComputingApp.TrafficLightCommandMessage) {
+            forwardTrafficLightCommand((FogComputingApp.TrafficLightCommandMessage) msg);
         }
     }
 
-    private void processAndForwardVehicleData(@Nonnull final Event event) {
-        List<VehicleDataSenderApp.VehicleDataMessage> msgs;
+    private void processAndForwardData(@Nonnull final Event event) {
+        // Coletar mensagens para processamento
+        List<VehicleApp.VehicleDataMessage> messagesToProcess;
         synchronized (receivedMessages) {
-            if (receivedMessages.isEmpty()) {
-                scheduleNext();
-                return;
-            }
-            msgs = new ArrayList<>(receivedMessages);
+            messagesToProcess = new ArrayList<>(receivedMessages);
             receivedMessages.clear();
         }
-
-        RsuAggregatedDataMessage aggregate = new RsuAggregatedDataMessage(getOs().getId(), msgs);
-        DestinationAddressContainer destination = new DestinationAddressContainer(IpResolver.getSingleton().nameToIpAddress(FOG_SERVER_ID), APP_ID);
-        MessageRouting routing = MessageRouting.ipRouting(destination);
-        getOs().getRouter().sendIpMessage(aggregate, routing);
-
-        if (!trafficInfo.isEmpty() && getOs().getSimulationTime() - lastTrafficInfoTime < 10000) {
-            broadcastTrafficInfo();
+        
+        if (!messagesToProcess.isEmpty()) {
+            // Processar métricas de tráfego (simplificado)
+            processTrafficMetrics(messagesToProcess);
+            
+            // Enviar dados agregados para o Fog
+            sendToFog(messagesToProcess);
         }
-
-        scheduleNext();
+        
+        // Enviar alertas ativos para veículos
+        broadcastActiveRisks();
+        
+        // Enviar métricas de tráfego para veículos
+        broadcastTrafficInfo();
+        
+        // Reagendar processamento
+        getOs().getEventManager().addEvent(
+            getOs().getSimulationTime() + PROCESSING_INTERVAL, 
+            this::processAndForwardData
+        );
     }
 
-    private void scheduleNext() {
-        getOs().getEventManager().addEvent(getOs().getSimulationTime() + PROCESSING_INTERVAL, this::processAndForwardVehicleData);
+    private void processTrafficMetrics(List<VehicleApp.VehicleDataMessage> messages) {
+        // Lógica simplificada para calcular métricas de tráfego
+        // (Em implementação real, usaríamos segmentos de estrada)
+        Map<String, Integer> vehicleCounts = new HashMap<>();
+        Map<String, Double> avgSpeeds = new HashMap<>();
+        
+        for (VehicleApp.VehicleDataMessage msg : messages) {
+            String segmentId = getSegmentId(msg.getPosition());
+            
+            vehicleCounts.put(segmentId, vehicleCounts.getOrDefault(segmentId, 0) + 1);
+            avgSpeeds.put(segmentId, avgSpeeds.getOrDefault(segmentId, 0.0) + msg.getSpeed());
+        }
+        
+        // Calcular métricas finais
+        trafficMetrics.clear();
+        for (String segmentId : vehicleCounts.keySet()) {
+            int count = vehicleCounts.get(segmentId);
+            double avgSpeed = avgSpeeds.get(segmentId) / count;
+            trafficMetrics.put(segmentId, avgSpeed);
+        }
+    }
+    
+    private String getSegmentId(GeoPoint position) {
+        // Simplificação: usar coordenadas arredondadas
+        return String.format("seg_%.4f_%.4f", 
+            Math.round(position.getLatitude() * 10000) / 10000.0,
+            Math.round(position.getLongitude() * 10000) / 10000.0);
+    }
+
+    private void sendToFog(List<VehicleApp.VehicleDataMessage> messages) {
+        DestinationAddressContainer destination = new DestinationAddressContainer(
+            IpResolver.getSingleton().nameToIpAddress(FOG_SERVER_ID), 
+            APP_ID
+        );
+        
+        MessageRouting routing = MessageRouting.ipRouting(destination);
+        RsuAggregatedDataMessage aggregate = new RsuAggregatedDataMessage(
+            getOs().getId(),
+            getOs().getPosition(),
+            messages
+        );
+        
+        getOs().getRouter().sendIpMessage(aggregate, routing);
     }
 
     private void processRiskAlerts(FogComputingApp.FogRiskAlertsMessage msg) {
-        synchronized (vehicleRisks) {
-            for (var risk : msg.getRiskSituations()) {
-                vehicleRisks.put(risk.getPrimaryVehicleId(), risk);
-                if (risk.getSecondaryVehicleId() != null) {
-                    vehicleRisks.put(risk.getSecondaryVehicleId(), risk);
-                }
+        synchronized (activeRisks) {
+            for (FogComputingApp.RiskSituation risk : msg.getRiskSituations()) {
+                String riskId = risk.getPrimaryVehicleId() + "_" + risk.getTimestamp();
+                activeRisks.put(riskId, convertRisk(risk));
             }
         }
-        broadcastRiskAlerts(msg.getRiskSituations());
+    }
+    
+    private VehicleApp.RiskSituation convertRisk(FogComputingApp.RiskSituation fogRisk) {
+        Set<String> affectedVehicles = new HashSet<>();
+        affectedVehicles.add(fogRisk.getPrimaryVehicleId());
+        if (fogRisk.getSecondaryVehicleId() != null) {
+            affectedVehicles.add(fogRisk.getSecondaryVehicleId());
+        }
+        
+        return new VehicleApp.RiskSituation(
+            fogRisk.getPrimaryVehicleId() + "_" + fogRisk.getTimestamp(),
+            VehicleApp.RiskType.valueOf(fogRisk.getType().name()),
+            affectedVehicles,
+            fogRisk.getLocation(),
+            fogRisk.getDescription()
+        );
     }
 
     private void processTrafficInfo(FogComputingApp.FogTrafficInfoMessage msg) {
-        trafficInfo = new ArrayList<>(msg.getSegmentInfos());
-        lastTrafficInfoTime = getOs().getSimulationTime();
-        broadcastTrafficInfo();
-    }
-
-    private void sendRiskAlertToVehicle(String vehicleId, FogComputingApp.RiskSituation risk) {
-        try {
-            DestinationAddressContainer dest = new DestinationAddressContainer(IpResolver.getSingleton().nameToIpAddress(vehicleId), APP_ID);
-            MessageRouting routing = MessageRouting.ipRouting(dest);
-            RsuRiskAlertMessage alert = new RsuRiskAlertMessage(getOs().getId(), getOs().getSimulationTime(), risk);
-            getOs().getRouter().sendIpMessage(alert, routing);
-        } catch (Exception e) {
-            getLog().error("Erro ao enviar alerta para {}: {}", vehicleId, e.getMessage());
+        // Atualizar métricas de tráfego com dados do Fog
+        for (FogComputingApp.TrafficSegmentInfo segment : msg.getSegmentInfos()) {
+            trafficMetrics.put(segment.getSegmentId(), segment.getAvgSpeed());
         }
     }
+    
+    private void forwardTrafficLightCommand(FogComputingApp.TrafficLightCommandMessage command) {
+        MessageRouting routing = MessageRouting.createGeoBroadcastRouting(
+            AdHocChannel.CCH,
+            "TrafficLightApp",
+            BROADCAST_RADIUS,
+            getOs().getPosition()
+        );
+        
+        FogComputingApp.TrafficLightCommandMessage broadcastMsg = 
+            new FogComputingApp.TrafficLightCommandMessage(
+                routing,
+                command.getCommand(),
+                command.getIntersectionId(),
+                command.getDuration()
+            );
+        
+        getOs().getAdHocModule().sendV2xMessage(broadcastMsg, routing);
+        
+        getLog().infoSimTime(this, "Encaminhado comando para semáforo: {}",
+            command.getCommand());
+    }
 
-    private void broadcastRiskAlerts(List<FogComputingApp.RiskSituation> risks) {
-        if (risks.isEmpty()) return;
-        RsuRiskAlertsMessage msg = new RsuRiskAlertsMessage(getOs().getId(), getOs().getSimulationTime(), new ArrayList<>(risks));
-        MessageRouting routing = MessageRouting.createGeoBroadcastRouting(AdHocChannel.CCH, APP_ID, BROADCAST_RADIUS, getOs().getPosition());
-        getOs().getAdHocModule().sendV2xMessage(msg, routing);
+    private void broadcastActiveRisks() {
+        if (activeRisks.isEmpty()) return;
+        
+        List<VehicleApp.RiskSituation> risks = new ArrayList<>(activeRisks.values());
+        MessageRouting routing = MessageRouting.createGeoBroadcastRouting(
+            AdHocChannel.CCH,
+            VehicleApp.APP_ID,
+            BROADCAST_RADIUS,
+            getOs().getPosition()
+        );
+        
+        VehicleApp.RsuRiskAlertsMessage alertsMsg = new VehicleApp.RsuRiskAlertsMessage(
+            routing,
+            getOs().getId(),
+            getOs().getPosition(),
+            risks
+        );
+        
+        getOs().getAdHocModule().sendV2xMessage(alertsMsg, routing);
     }
 
     private void broadcastTrafficInfo() {
-        if (trafficInfo.isEmpty()) return;
-        RsuTrafficInfoMessage msg = new RsuTrafficInfoMessage(getOs().getId(), getOs().getSimulationTime(), new ArrayList<>(trafficInfo));
-        MessageRouting routing = MessageRouting.createGeoBroadcastRouting(AdHocChannel.CCH, APP_ID, BROADCAST_RADIUS, getOs().getPosition());
-        getOs().getAdHocModule().sendV2xMessage(msg, routing);
+        if (trafficMetrics.isEmpty()) return;
+        
+        MessageRouting routing = MessageRouting.createGeoBroadcastRouting(
+            AdHocChannel.CCH,
+            VehicleApp.APP_ID,
+            BROADCAST_RADIUS,
+            getOs().getPosition()
+        );
+        
+        VehicleApp.RsuTrafficInfoMessage infoMsg = new VehicleApp.RsuTrafficInfoMessage(
+            routing,
+            getOs().getId(),
+            new HashMap<>(trafficMetrics)
+        );
+        
+        getOs().getAdHocModule().sendV2xMessage(infoMsg, routing);
     }
 
     public static class RsuAggregatedDataMessage extends V2xMessage {
         private final String rsuId;
-        private final List<VehicleDataSenderApp.VehicleDataMessage> vehicleMessages;
-
-        public RsuAggregatedDataMessage(String id, List<VehicleDataSenderApp.VehicleDataMessage> msgs) {
-            rsuId = id;
-            vehicleMessages = msgs;
-        }
-        public String getRsuId() { return rsuId; }
-        public List<VehicleDataSenderApp.VehicleDataMessage> getVehicleMessages() { return vehicleMessages; }
-    }
-
-    public static class RsuRiskAlertMessage extends V2xMessage {
-        private final String rsuId;
-        private final long timestamp;
-        private final FogComputingApp.RiskSituation riskSituation;
-
-        public RsuRiskAlertMessage(String rsuId, long ts, FogComputingApp.RiskSituation r) {
+        private final GeoPoint rsuPosition;
+        private final List<VehicleApp.VehicleDataMessage> vehicleMessages;
+        
+        public RsuAggregatedDataMessage(String rsuId, GeoPoint rsuPosition, 
+                                       List<VehicleApp.VehicleDataMessage> vehicleMessages) {
+            super(null);
             this.rsuId = rsuId;
-            this.timestamp = ts;
-            this.riskSituation = r;
+            this.rsuPosition = rsuPosition;
+            this.vehicleMessages = vehicleMessages;
         }
+        
+        // Getters
         public String getRsuId() { return rsuId; }
-        public long getTimestamp() { return timestamp; }
-        public FogComputingApp.RiskSituation getRiskSituation() { return riskSituation; }
-    }
-
-    public static class RsuRiskAlertsMessage extends V2xMessage {
-        private final String rsuId;
-        private final long timestamp;
-        private final List<FogComputingApp.RiskSituation> riskSituations;
-
-        public RsuRiskAlertsMessage(String rsuId, long ts, List<FogComputingApp.RiskSituation> risks) {
-            this.rsuId = rsuId;
-            this.timestamp = ts;
-            this.riskSituations = risks;
+        public GeoPoint getRsuPosition() { return rsuPosition; }
+        public List<VehicleApp.VehicleDataMessage> getVehicleMessages() { return vehicleMessages; }
+        
+        @Override
+        public EncodedPayload getPayload() {
+            return new EncodedPayload(toString().getBytes());
         }
-        public String getRsuId() { return rsuId; }
-        public long getTimestamp() { return timestamp; }
-        public List<FogComputingApp.RiskSituation> getRiskSituations() { return riskSituations; }
-    }
-
-    public static class RsuTrafficInfoMessage extends V2xMessage {
-        private final String rsuId;
-        private final long timestamp;
-        private final List<FogComputingApp.TrafficSegmentInfo> segmentInfos;
-
-        public RsuTrafficInfoMessage(String rsuId, long ts, List<FogComputingApp.TrafficSegmentInfo> infos) {
-            this.rsuId = rsuId;
-            this.timestamp = ts;
-            this.segmentInfos = infos;
+        
+        @Override
+        public String toString() {
+            return String.format("RsuAggregate[%s,%d msgs]", rsuId, vehicleMessages.size());
         }
-        public String getRsuId() { return rsuId; }
-        public long getTimestamp() { return timestamp; }
-        public List<FogComputingApp.TrafficSegmentInfo> getSegmentInfos() { return segmentInfos; }
     }
 }
