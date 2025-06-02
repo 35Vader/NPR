@@ -1,3 +1,4 @@
+cat > scenarios/Monza/mapping/mapping_config.json << 'EOF'
 {
     "prototypes": [
         {
@@ -9,7 +10,8 @@
             "minGap": 2.5,
             "sigma": 0.5,
             "speedDeviation": 0.1,
-            "tau": 1
+            "tau": 1,
+            "applications": ["org.myproject.applications.VehicleApp"]
         }
     ],
     "vehicles": [
@@ -37,7 +39,22 @@
                 }
             ]
         }
+    ],
+    "rsus": [
+        {
+            "position": {
+                "latitude": 45.8205,
+                "longitude": 9.2398
+            },
+            "applications": ["org.myproject.applications.RsuDataCollectorApp"]
+        }
+    ],
+    "servers": [
+        {
+            "id": "fog_server_1",
+            "applications": ["org.myproject.applications.FogComputingApp"]
+        }
     ]
 }
-
+EOF
 
