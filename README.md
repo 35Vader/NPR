@@ -1,13 +1,23 @@
 ./mosaic.sh -s Monza -w 0
-
-LOG_DIR=$(ls -t logs/ | head -1)
-echo "=== SISTEMA V2X DE SEGURANÇA RODOVIÁRIA ==="
-echo "Veículos com aplicações ativas:"
+---
+echo ""
+echo "=== RESUMO DO SISTEMA COMPLETO ==="
+echo "1. VEÍCULOS ATIVOS:"
 ls logs/$LOG_DIR/apps/ | grep veh | wc -l
-echo "RSUs processando dados:"
+
+echo "2. RSUs ATIVAS:"
 ls logs/$LOG_DIR/apps/ | grep rsu | wc -l
 
-echo "=== TOTAL DE MENSAGENS V2X ENVIADAS ==="
-grep -r "MENSAGENS ENVIADAS" logs/$LOG_DIR/apps/ | wc -l
-echo "=== ALERTAS DE SEGURANÇA DETECTADOS ==="
-grep -r "ALERTA CRÍTICO\|ENVIOU ALERTA" logs/$LOG_DIR/apps/ | wc -l
+echo "3. SERVIDORES FOG:"
+ls logs/$LOG_DIR/apps/ | grep server | wc -l
+---
+echo ""
+echo "=== LOGS MAIS RECENTES DE CADA COMPONENTE ==="
+echo "--- FOG SERVER ---"
+find logs/$LOG_DIR/apps/ -name "FogServerApp.log" -exec tail -3 {} \;
+
+echo "--- RSUs ---"
+find logs/$LOG_DIR/apps/ -name "RsuApp.log" -exec tail -2 {} \;
+
+echo "--- VEÍCULOS ---"
+find logs/$LOG_DIR/apps/ -name "VehicleApp.log" -exec tail -1 {} \; | head -5
