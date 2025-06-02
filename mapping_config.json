@@ -1,4 +1,3 @@
-cat > scenarios/Monza/mapping/mapping_config.json << 'EOF'
 {
     "prototypes": [
         {
